@@ -16,9 +16,6 @@ npm run setup      # instala dependências, cria o banco SQLite e popula com dad
 npm run dev        # API em http://localhost:3333 · painel em http://localhost:5173
 ```
 
-Login de demonstração: **matheus@varzea.com** / **varzea123** (diretoria do *Resenha FC*).
-Também existem `joao@varzea.com` (comissão técnica) e `bruno@varzea.com` (jogador), com a mesma senha — úteis para ver como as permissões mudam a interface.
-
 | Comando | O que faz |
 | --- | --- |
 | `npm run dev` | Sobe API e painel com recarga automática |
