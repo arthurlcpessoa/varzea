@@ -1,0 +1,243 @@
+// Modelo de dados da plataforma Várzea.
+// Em desenvolvimento usamos SQLite; para produção, troque o provider para "postgresql"
+// e ajuste DATABASE_URL. Campos "enum" são strings validadas na aplicação
+// (ver src/lib/domain.ts) para manter compatibilidade entre bancos.
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Conta de acesso à plataforma (RN01, RF01).
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  nickname     String?
+  phone        String?
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  memberships    ClubMember[]
+  passwordResets PasswordReset[]
+  announcements  Announcement[]
+}
+
+/// Token de recuperação de acesso (RF04). Guardamos apenas o hash do token.
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Club {
+  id        String   @id @default(cuid())
+  name      String
+  city      String?
+  state     String?
+  /// Chave Pix do clube, usada para gerar o "Pix copia e cola" das partidas.
+  pixKey    String?
+  /// Nome do recebedor exibido no Pix.
+  pixName   String?
+  createdAt DateTime @default(now())
+
+  members       ClubMember[]
+  matches       Match[]
+  invites       Invite[]
+  announcements Announcement[]
+  botConfig     BotConfig?
+  botMessages   BotMessage[]
+}
+
+/// Participante de um clube. Pode estar ou não vinculado a uma conta (userId),
+/// permitindo cadastrar jogadores que ainda não usam o painel (RN07, RF10).
+model ClubMember {
+  id           String   @id @default(cuid())
+  clubId       String
+  userId       String?
+  name         String
+  nickname     String?
+  phone        String?
+  /// DIRETORIA | COMISSAO | JOGADOR
+  role         String   @default("JOGADOR")
+  /// GOLEIRO | DEFESA | MEIO | ATAQUE
+  position     String?
+  isGoalkeeper Boolean  @default(false)
+  /// Nível técnico de 1 a 5, usado no equilíbrio do sorteio (RF36).
+  skill        Int      @default(3)
+  /// Remoção lógica: retira o acesso ao clube sem apagar a conta (RN20).
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  club         Club               @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user         User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  participations MatchParticipant[]
+  goals        MatchEvent[]       @relation("scorer")
+  assists      MatchEvent[]       @relation("assist")
+
+  @@unique([clubId, userId])
+  @@unique([clubId, phone])
+  @@index([clubId])
+}
+
+/// Convite para entrar em um clube por código (RF10).
+model Invite {
+  id          String    @id @default(cuid())
+  clubId      String
+  code        String    @unique
+  role        String    @default("JOGADOR")
+  expiresAt   DateTime
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+}
+
+/// Partida de um clube (RN09, RF16-RF21).
+model Match {
+  id          String   @id @default(cuid())
+  clubId      String
+  title       String
+  startsAt    DateTime
+  durationMin Int      @default(90)
+  location    String
+  maxPlayers  Int      @default(20)
+  /// Valor por jogador em centavos (0 = gratuita).
+  priceCents  Int      @default(0)
+  notes       String?
+  /// SCHEDULED | LIVE | FINISHED | CANCELED
+  status      String   @default("SCHEDULED")
+
+  // Cronômetro (RF37-RF39): tempo acumulado + instante em que voltou a correr.
+  elapsedSec   Int       @default(0)
+  runningSince DateTime?
+  period       Int       @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  club         Club               @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  participants MatchParticipant[]
+  events       MatchEvent[]
+  announcements Announcement[]
+
+  @@index([clubId, startsAt])
+}
+
+/// Situação de um jogador numa partida: presença, pagamento e time (RN10, RN11, RN14).
+model MatchParticipant {
+  id            String    @id @default(cuid())
+  matchId       String
+  memberId      String
+  /// CONFIRMED | PENDING | DECLINED | WAITLIST
+  status        String    @default("PENDING")
+  /// PENDING | PAID | EXEMPT
+  paymentStatus String    @default("PENDING")
+  /// A | B | null
+  team          String?
+  confirmedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  match    Match         @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  member   ClubMember    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@unique([matchId, memberId])
+}
+
+/// Histórico de cobranças/pagamentos de um participante (RF29-RF32).
+model Payment {
+  id            String    @id @default(cuid())
+  participantId String
+  amountCents   Int
+  /// Identificador da transação Pix (txid) usado na conferência.
+  txid          String    @unique
+  /// "Pix copia e cola" entregue ao jogador.
+  copyPaste     String?
+  /// PENDING | CONFIRMED | CANCELED
+  status        String    @default("PENDING")
+  provider      String
+  /// Quem confirmou (memberId) quando a conferência é manual.
+  verifiedById  String?
+  verifiedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  participant MatchParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+}
+
+/// Lances da partida: gols com autor e assistência (RF40, RF41).
+model MatchEvent {
+  id        String   @id @default(cuid())
+  matchId   String
+  /// GOAL
+  type      String   @default("GOAL")
+  team      String
+  scorerId  String?
+  assistId  String?
+  /// Segundo de jogo em que o lance aconteceu.
+  second    Int
+  createdAt DateTime @default(now())
+
+  match  Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  scorer ClubMember? @relation("scorer", fields: [scorerId], references: [id], onDelete: SetNull)
+  assist ClubMember? @relation("assist", fields: [assistId], references: [id], onDelete: SetNull)
+}
+
+/// Avisos do clube e mensagens no mural da partida (RF46, RF47).
+model Announcement {
+  id        String   @id @default(cuid())
+  clubId    String
+  matchId   String?
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  match  Match? @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, createdAt])
+}
+
+/// Configuração do PELA-BOT / VarzIA por clube (RF22).
+model BotConfig {
+  id                String  @id @default(cuid())
+  clubId            String  @unique
+  enabled           Boolean @default(true)
+  /// Identificador do grupo/número no provedor de WhatsApp.
+  whatsappGroup     String?
+  /// Quantas horas antes da partida o bot envia o convite de confirmação.
+  inviteHoursBefore Int     @default(48)
+  /// Quantas horas antes o bot cobra quem ainda não pagou.
+  reminderHoursBefore Int   @default(6)
+  /// Libera vaga automaticamente quando alguém desiste (lista de espera).
+  autoPromoteWaitlist Boolean @default(true)
+  welcomeMessage    String  @default("Fala, galera! Sou a VarzIA, assistente do clube. Responda VOU para confirmar presença ou AJUDA para ver os comandos.")
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+}
+
+/// Registro das mensagens trocadas pelo bot (auditoria e simulador).
+model BotMessage {
+  id        String   @id @default(cuid())
+  clubId    String
+  /// IN | OUT
+  direction String
+  phone     String
+  body      String
+  createdAt DateTime @default(now())
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, createdAt])
+}
